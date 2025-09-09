@@ -1,6 +1,9 @@
 from matplotlib import pyplot as plt
 import numpy as np
 
+import cdd
+
+
 np.random.seed(3)
 
 # from stl_tool.stl import GOp, FOp, TasksOptimizer, ContinuousLinearSystem, BoxBound2d
@@ -33,4 +36,6 @@ map.add_obstacle(Box2d(x=0, y=-2, size=1.5))
 # you can create some rectangles even
 map.add_obstacle(Box2d(x=0, y=3, size=[1, 3]))
 
+
 map.draw()
+plt.show()

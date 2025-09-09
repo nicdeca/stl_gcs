@@ -1,3 +1,6 @@
+# Progect folders
+results/
+
 # Python
 __pycache__/
 *.py[cod]

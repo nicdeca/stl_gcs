@@ -1,0 +1,54 @@
+digraph GraphOfConvexSets {
+labelloc=t;
+v2 [label="S
+x = [1.000 0.500]
+cost = 0.000"]
+v3 [label="R1
+x = [2.300 0.500]
+cost = 0.000"]
+v4 [label="R2
+x = [3.600 0.500]
+cost = 0.000"]
+v5 [label="Corridor
+x = [4.900 0.500]
+cost = 0.000"]
+v6 [label="R3
+x = [6.200 0.500]
+cost = 0.000"]
+v7 [label="T
+x = [7.500 0.500]
+cost = 0.000"]
+v2 -> v3 [label="e0
+cost = 1.690
+
+ϕ = 1.000", color="#000000FF"];
+v3 -> v4 [label="e1
+cost = 1.690
+
+ϕ = 1.000", color="#000000FF"];
+v4 -> v5 [label="e2
+cost = 1.690
+
+ϕ = 1.000", color="#000000FF"];
+v5 -> v6 [label="e3
+cost = 1.690
+
+ϕ = 1.000", color="#000000FF"];
+v6 -> v7 [label="e4
+cost = 1.690
+
+ϕ = 1.000", color="#000000FF"];
+v3 -> v5 [label="e5
+cost = 0.000
+
+ϕ = 0.000", color="#00000020"];
+v4 -> v6 [label="e6
+cost = 0.000
+
+ϕ = 0.000", color="#00000020"];
+v2 -> v3 [label="e0 = active", color="#ff0000", style="dashed"];
+v3 -> v4 [label="e1 = active", color="#ff0000", style="dashed"];
+v4 -> v5 [label="e2 = active", color="#ff0000", style="dashed"];
+v5 -> v6 [label="e3 = active", color="#ff0000", style="dashed"];
+v6 -> v7 [label="e4 = active", color="#ff0000", style="dashed"];
+}
