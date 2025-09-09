@@ -2,7 +2,10 @@ import numpy as np
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib import cm
 from scipy.spatial import ConvexHull
+
 
 from math import floor
 
@@ -41,7 +44,7 @@ from stl_gcs.graph import Graph
 
 class BsplineGraphOfConvexSets(Graph):
     """
-    This implementation is taken from:
+    This implementation modifies the one from:
             https://github.com/vincekurtz/ltl_gcs/blob/main/ltlgcs/bezier_gcs.py
 
     Problem setup and solver for planning a piecewise bezier curve trajectory
@@ -263,9 +266,12 @@ class BsplineGraphOfConvexSets(Graph):
         # control point must be contained in the corresponding region
         gcs_verts = {}  # map our vertices to GCS vertices
         for v in self.vertices:
-            gcs_verts[v] = self.gcs.AddVertex(
-                self.regions[v].CartesianPower(self.order + 1)
-            )
+            if v == self.end_vertex:
+                gcs_verts[v] = self.gcs.AddVertex(self.regions[v])
+            else:
+                gcs_verts[v] = self.gcs.AddVertex(
+                    self.regions[v].CartesianPower(self.order + 1)
+                )
 
         # Define edges
         for e in self.edges:
@@ -381,27 +387,48 @@ class BsplineGraphOfConvexSets(Graph):
     # -----------------------------------------------------------
     # -------------------- PlotScenario -------------------------
 
-    def PlotScenario(self):
+    def PlotScenario(self, cmap_name="tab20"):
         """
-        Add a plot of each region to the current matplotlib axes.
-        Only supports 2D polytopes for now.
+        Plot each region (2D or 3D polytope) to the current matplotlib axes.
         """
+        fig = plt.gcf()
+        if self.dim == 3:
+            # create 3D axis if not already present
+            if not hasattr(fig, "_ax3d"):
+                ax = fig.add_subplot(111, projection="3d")
+                fig._ax3d = ax  # store so we reuse the same axis
+            else:
+                ax = fig._ax3d
+        else:
+            ax = plt.gca()
+
+        cmap = cm.get_cmap(cmap_name)
+
         for vertex, region in self.regions.items():
-            assert region.ambient_dimension() == 2, "only 2D sets allowed"
+            if vertex == self.end_vertex:
+                continue  # skip trivial target
 
-            if vertex != self.end_vertex:
-                # The target vertex is trivial and therefore not plotted
+            v = VPolytope(region).vertices().T
+            hull = ConvexHull(v)
 
-                # Compute vertices of the polygon in known order
-                v = VPolytope(region).vertices().T
-                hull = ConvexHull(v)
+            if self.dim == 2:
                 v_sorted = np.vstack([v[hull.vertices, 0], v[hull.vertices, 1]]).T
+                poly = Polygon(v_sorted, alpha=0.5, edgecolor="k", linewidth=2)
+                ax.add_patch(poly)
+            elif self.dim == 3:
+                for simplex in hull.simplices:
+                    facecolor = cmap((vid * 37) % cmap.N)
+                    tri = Poly3DCollection([v[simplex]], alpha=0.3)
+                    tri.set_facecolor(facecolor)
+                    tri.set_edgecolor("k")
+                    ax.add_collection3d(tri)
+            else:
+                raise ValueError("only 2D and 3D sets allowed")
 
-                # Make a polygonal patch
-                poly = Polygon(v_sorted, alpha=0.5, edgecolor="k", linewidth=3)
-                plt.gca().add_patch(poly)
-
-        # Use equal axes so square things look square
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        if self.dim == 3:
+            ax.set_zlabel("t")
         plt.axis("equal")
 
     # -----------------------------------------------------------
@@ -455,36 +482,48 @@ class BsplineGraphOfConvexSets(Graph):
 
     def AnimateSolution(self, result, show=True, save=False, filename=None):
         """
-        Create an animation of the solution on the current set of matplotlib
-        axes.
-
-        Args:
-            result:   MathematicalProgramResult from calling SolveShortestPath
-            show:     Flag for displaying the animation immediately
-            save:     Flag for saving a gif of the animation
-            filename: String denoting what file to save the animation to (.gif)
+        Animate the solution in 2D or 3D.
         """
-        assert self.dim == 2, "animation only supported in 2D"
+        assert self.dim in [2, 3], "animation only supported in 2D and 3D"
 
-        # Get current matplotlib figure and axes
         fig = plt.gcf()
-        ax = plt.gca()
+        if self.dim == 3:
+            # create 3D axis if not already present
+            if not hasattr(fig, "_ax3d"):
+                ax = fig.add_subplot(111, projection="3d")
+                fig._ax3d = ax  # store so we reuse the same axis
+            else:
+                ax = fig._ax3d
+        else:
+            ax = plt.gca()
 
-        # Get the solution as a sequence of splines
         s = self.ExtractSolution(result)
-        q = ax.scatter(*s[0].value(0), color="blue", s=50, zorder=3)
+
+        if self.dim == 2:
+            q = ax.scatter(*s[0].value(0), color="blue", s=50, zorder=3)
+        else:
+            # init = s[0].value(0).T
+            init = s[0].value(0).flatten()
+            q = ax.scatter(init[0], init[1], init[2], color="blue", s=50)
 
         def animate(t):
             segment = floor(t)
-            new_q = s[segment].value(t % 1).T
-            q.set_offsets(new_q)
+            new_q = s[segment].value(t % 1).flatten()
+            if self.dim == 2:
+                q.set_offsets(new_q)
+            else:
+                q._offsets3d = (
+                    np.array([new_q[0]]),
+                    np.array([new_q[1]]),
+                    np.array([new_q[2]]),
+                )
             return q
 
         t = np.arange(0, len(s), 0.02)
         ani = animation.FuncAnimation(fig, animate, t, interval=50, blit=False)
 
         if save:
-            assert filename is not None, "must supply a filename to save the animation"
+            assert filename is not None
             print(f"Saving animation to {filename}, this may take a minute...")
             ani.save(filename, writer=animation.PillowWriter(fps=30))
 
@@ -498,22 +537,25 @@ class BsplineGraphOfConvexSets(Graph):
 
     def PlotSolution(self, result, plot_control_points=True, plot_path=True):
         """
-        Add a plot of the solution to the current matplotlib axes. Only
-        supported for 2D.
-
-        Args:
-            result: MathematicalProgramResult from calling SolveShortestPath
-            plot_control_points: flag for plotting the control points
-            plot_path: flag for plotting the actual path
+        Plot solution paths (2D or 3D).
         """
+        fig = plt.gcf()
+
+        if self.dim == 3:
+            # create 3D axis if not already present
+            if not hasattr(fig, "_ax3d"):
+                ax = fig.add_subplot(111, projection="3d")
+                fig._ax3d = ax  # store so we reuse the same axis
+            else:
+                ax = fig._ax3d
+        else:
+            ax = plt.gca()
+
         for edge in self.gcs.Edges():
-            # Note that focusing on xu for each edge ignores the target
-            # state, since that's just an indicator of task completion
             phi = result.GetSolution(edge.phi())
             xu = result.GetSolution(edge.xu())
 
             if phi > 0.0:
-                # Construct a bezier curve from the control points
                 control_points = xu.reshape(self.order + 1, -1)
                 basis = BsplineBasis(
                     self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0, 1
@@ -521,19 +563,43 @@ class BsplineGraphOfConvexSets(Graph):
                 path = BsplineTrajectory(basis, control_points.T)
 
                 if plot_control_points:
-                    plt.plot(
-                        control_points[:, 0],
-                        control_points[:, 1],
-                        "o--",
-                        color="red",
-                        alpha=phi,
-                    )
+                    if self.dim == 2:
+                        ax.plot(
+                            control_points[:, 0],
+                            control_points[:, 1],
+                            "o--",
+                            color="red",
+                            alpha=phi,
+                        )
+                    else:
+                        ax.plot(
+                            control_points[:, 0],
+                            control_points[:, 1],
+                            control_points[:, 2],
+                            "o--",
+                            color="red",
+                            alpha=phi,
+                        )
 
                 if plot_path:
                     curve = path.vector_values(np.linspace(0, 1))
-                    plt.plot(
-                        curve[0, :], curve[1, :], color="blue", linewidth=3, alpha=phi
-                    )
+                    if self.dim == 2:
+                        ax.plot(
+                            curve[0, :],
+                            curve[1, :],
+                            color="blue",
+                            linewidth=2,
+                            alpha=phi,
+                        )
+                    else:
+                        ax.plot(
+                            curve[0, :],
+                            curve[1, :],
+                            curve[2, :],
+                            color="blue",
+                            linewidth=2,
+                            alpha=phi,
+                        )
 
 
 # ============================================================

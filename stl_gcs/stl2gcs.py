@@ -18,12 +18,12 @@ from stl_tool.stl import (
     Geq,
 )
 
-from pydrake.all import HPolyhedron
+from pydrake.all import HPolyhedron, Point
 
 from stl_gcs.graph import Graph
 
 
-class GCSTaskScheduler:
+class STLTasks2GCS:
     """
     This class takes as input a formula and the state space dimension and creates a time schedule for the tasks
     in the form of a Graph of Convex Sets. Notice that formula already integrates a tree of static and temporal
@@ -137,7 +137,7 @@ class GCSTaskScheduler:
 
             tv_poly = None
 
-            if t_start_task == t_end:
+            if abs(t_start_task - t_end) < 1e-6:
                 # This can typically happen for an always task which is active starting from t_start
                 # Two cases are possible:
                 # 1) The second polytope already contains the first one, so gamma = 0
@@ -170,9 +170,12 @@ class GCSTaskScheduler:
                 self.start_vertex = polyID1
             prev_polyID = polyID2
 
-        # TODO: Set end vertex (if multiple disjunctive branches, you might have multiple end vertices, just add a dummy vertex and connect them all to it)
-
-        pass
+        # Add trivial vertex at the end to represent the end of the formula
+        self.end_vertex = prev_polyID + 1
+        self.graph.add_vertex(self.end_vertex)
+        self.graph.add_edge((prev_polyID, self.end_vertex))
+        zero = np.zeros(self.xdim + 1)
+        self.vertex2poly[self.end_vertex] = Point(zero)
 
     def append_to_graph(
         self,
@@ -508,6 +511,9 @@ class GCSTaskScheduler:
 
         for vid, poly in self.vertex2poly.items():
 
+            if isinstance(poly, Point):
+                continue
+
             # Check if empty
             if poly.IsEmpty():
                 print("Polytope is empty!")
@@ -600,8 +606,8 @@ if __name__ == "__main__":
 
         # plt.show()
 
-        scheduler = GCSTaskScheduler(formula=formula, xdim=2, r=0.05, x0=x0)
+        stl_tasks2gcs = STLTasks2GCS(formula=formula, xdim=2, r=0.05, x0=x0)
 
-        scheduler.plot3D_polytopes()
+        stl_tasks2gcs.plot3D_polytopes()
 
     toy_example()
