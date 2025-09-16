@@ -42,7 +42,7 @@ from pydrake.all import (
 from stl_gcs.graph import Graph
 
 
-class BsplineGraphOfConvexSets(Graph):
+class BsplineGraphOfConvexSetsNoTime(Graph):
     """
     This implementation modifies the one from:
             https://github.com/vincekurtz/ltl_gcs/blob/main/ltlgcs/bezier_gcs.py
@@ -58,6 +58,12 @@ class BsplineGraphOfConvexSets(Graph):
           point to the target vertex
         - The target vertex is not associated with any constraints on the
           curve: it just indicates that the task is complete.
+
+    N.B. Diffrerently from the class BsplineGraphOfConvexSets this class does not
+    consider time as a variable. The Bezier curves are only defined in the
+    spatial dimensions. Time can be considered (up to scaling) as
+    corresponding to the Spline parameter, which goes from 0 to 1 for each
+    curve.
     """
 
     def __init__(
@@ -318,6 +324,8 @@ class BsplineGraphOfConvexSets(Graph):
 
         # Add initial condition constraint
         for i in range(self.dim):
+            # source.x() is a vector self.dim*(order+1).
+            # This sets only the first control point
             source.AddConstraint(source.x()[i] == self.start_point[i])
 
         # Allow access to GCS vertices later
@@ -417,7 +425,7 @@ class BsplineGraphOfConvexSets(Graph):
                 ax.add_patch(poly)
             elif self.dim == 3:
                 for simplex in hull.simplices:
-                    facecolor = cmap((vid * 37) % cmap.N)
+                    facecolor = cmap((vertex * 37) % cmap.N)
                     tri = Poly3DCollection([v[simplex]], alpha=0.3)
                     tri.set_facecolor(facecolor)
                     tri.set_edgecolor("k")
@@ -686,7 +694,7 @@ if __name__ == "__main__":
         start_point = np.array([0.5, 0.5])
 
         # Create the Bspline GCS problem
-        gcs = BsplineGraphOfConvexSets(
+        gcs = BsplineGraphOfConvexSetsNoTime(
             vertices,
             edges,
             regions,

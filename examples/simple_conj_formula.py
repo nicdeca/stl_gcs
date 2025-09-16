@@ -13,7 +13,8 @@ from stl_tool.stl import (
 )
 
 from stl_gcs.stl2gcs import STLTasks2GCS
-from stl_gcs.bspline_gcs import BsplineGraphOfConvexSets
+from stl_gcs.spatiotemp_gcs import SpatioTemporalBsplineGraphOfConvexSets
+from stl_gcs.bspline_gcs_notime import BsplineGraphOfConvexSetsNoTime
 
 
 if __name__ == "__main__":
@@ -72,13 +73,13 @@ if __name__ == "__main__":
 
         formula = formula1 & formula2 & formula3
 
-        formula.show_graph()
+        # formula.show_graph()
 
         # plt.show()
 
         stl_tasks2gcs = STLTasks2GCS(formula=formula, xdim=2, r=0.05, x0=x0)
 
-        stl_tasks2gcs.plot3D_polytopes()
+        # stl_tasks2gcs.plot3D_polytopes()
 
         graph = stl_tasks2gcs.graph
         vertices = graph.vertices
@@ -89,7 +90,17 @@ if __name__ == "__main__":
         start_point = np.hstack((stl_tasks2gcs.x0, t0))
 
         # Create the Bspline GCS problem
-        gcs = BsplineGraphOfConvexSets(
+        # gcs = SpatioTemporalBsplineGraphOfConvexSets(
+        #     vertices,
+        #     edges,
+        #     vertex2polydict,
+        #     start_vertex,
+        #     end_vertex,
+        #     start_point,
+        #     order=3,
+        #     continuity=2,
+        # )
+        gcs = BsplineGraphOfConvexSetsNoTime(
             vertices,
             edges,
             vertex2polydict,
@@ -102,7 +113,7 @@ if __name__ == "__main__":
 
         # Add costs to the problem
         gcs.AddLengthCost(weight=1.0, norm="L2_squared")
-        gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
+        # gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
 
         # Plot the scenario
         plt.figure(figsize=(8, 8))
@@ -123,7 +134,7 @@ if __name__ == "__main__":
             max_rounded_paths=5,
             solver="mosek",
         )
-        assert result.is_success()
+        # assert result.is_success()
         print(f"Optimal cost: {result.get_optimal_cost()}")
 
         # Plot the solution

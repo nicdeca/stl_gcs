@@ -97,6 +97,7 @@ class STLTasks2GCS:
         prev_polyID = None
         prev_task_polytope = None
         t_start_next_task = 0.0
+        tb = 0.0  # end time of the previous task
 
         for varphi in potential_varphi_tasks:
             # take all the children nodes and check that the remaining formulas are in the predicate
@@ -105,7 +106,7 @@ class STLTasks2GCS:
                 formula=varphi
             )
 
-            root: Union[FOp, UOp, GOp] = varphi.root  # Temporal operator of the fomula.
+            # root: Union[FOp, UOp, GOp] = varphi.root  # Temporal operator of the fomula.
             # Time interval of the formula.
             time_interval: TimeInterval = varphi.root.interval
             # Output matrix of the predicate node.      # TODO: The whole configuration should be constrained by the polytope so C should always be identity
@@ -154,7 +155,11 @@ class STLTasks2GCS:
                 # A time-varying polytope is only needed when the task starts strictly before the time at which the predicate
                 # function has to be satisfied i.e. interval.a for an always operator or interval.b for an eventually operator
                 tv_poly = self.build_tv_polytope(
-                    prev_task_polytope, curr_task_polytope, t_start_task, t_end
+                    prev_task_polytope,
+                    curr_task_polytope,
+                    t_start_task,
+                    t_end,
+                    tb,
                 )
 
             tc_poly = self.build_tc_polytope(
@@ -169,6 +174,7 @@ class STLTasks2GCS:
             if self.start_vertex is None:
                 self.start_vertex = polyID1
             prev_polyID = polyID2
+            tb = time_interval.b
 
         # Add trivial vertex at the end to represent the end of the formula
         self.end_vertex = prev_polyID + 1
@@ -256,11 +262,12 @@ class STLTasks2GCS:
         curr_poly: Polyhedron,
         t_start: float,
         t_end: float,
+        tb: float,
     ) -> HPolyhedron:
         """
         Build a time-varying polytope as an H-polyhedron in variables [x; t],
         parameterized by minimal gamma computed to ensure that curr_poly contains
-        prev_poly at time t_start.
+        prev_poly at time tb.
         Standard H-form for variables [x (n dims); t (1 dim)]:
             A_tv * [x; t] <= b_tv
         where the first block enforces:
@@ -272,11 +279,11 @@ class STLTasks2GCS:
         """
 
         if prev_poly is None:
-            gamma = self.gamma_for_initial_state(curr_poly, t_start, t_end)
+            gamma = self.gamma_for_initial_state(curr_poly, tb, t_end)
         else:
             # Compute the minimum slope of the time-varying polytope such that
             # prev_poly(t_k) ⊆ curr_poly(t_k, gamma)
-            gamma = self.minimal_gamma(prev_poly, curr_poly, t_start, t_end)
+            gamma = self.minimal_gamma(prev_poly, curr_poly, tb, t_end)
 
         cons_dim = curr_poly.A.shape[0]
 
@@ -466,7 +473,7 @@ class STLTasks2GCS:
         self, curr_poly: Polyhedron, prev_poly: Polyhedron
     ) -> float:
         """
-        Check if the previous state satisfies the current task's predicate at time t_start.
+        Check if the previous set satisfies the current task's predicate at time t_start.
         """
         # This can typically happen for an always task which is active starting from t_start
         # Two cases are possible:
