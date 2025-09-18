@@ -33,12 +33,22 @@ class STLTasks2GCS:
     we just create the graph of convex sets structure, the polytopes and the time intervals associated to each task.
     """
 
-    def __init__(self, formula: Formula, xdim: int, r: float, x0: np.ndarray) -> None:
+    def __init__(
+        self,
+        formula: Formula,
+        xdim: int,
+        r: float,
+        x0: np.ndarray,
+        t0: float = 0.0,
+        eps_gamma: float = 1e-1,
+    ) -> None:
         """
         :param formula: The STL formula to be satisfied.
         :param xdim: The dimension of the state space.
         :param r: The minimum desired robustness of the formula.
         :param x0: The initial state of the system.
+        :param t0: The initial time of the system.
+        :param eps_gamma: tolerance for gamma making the next set slightly larger than necessary.
         TODO: Add until operator, FG and GF operators.
         """
         self.formula: Formula = formula
@@ -46,6 +56,9 @@ class STLTasks2GCS:
         self.r: float = r
 
         self.x0: np.ndarray = x0
+        self.t0: float = t0
+
+        self.eps_gamma: float = eps_gamma  # tolerance for gamma
 
         # Define a graph for the GCS formulation. Vertices and edges are initially the empty list
         vertices = []
@@ -54,7 +67,10 @@ class STLTasks2GCS:
         self.start_vertex = None
         self.end_vertex = None
 
+        self._vertex_counter = 0  # for generating unique vertex IDs
+
         self.vertex2poly: dict = {}  # map each vertex to a time-varying polytope
+        self.vertex2branch: dict = {}  # map vertex -> disjunctive branch ID
 
         self.build_stl_gcs()
 
@@ -62,126 +78,140 @@ class STLTasks2GCS:
         """
         Iterate through the formula tree and associate to each task a time-varying polytope.
         Build the graph of convex sets from the given formula.
+        We assume formulas may have the following structure:
+        1) a disjusnction of conjunctions of single temporal operators (not implemented yet)
+        2) a conjunction of single temporal operators
+        3) a single temporal operator
+        Each temporal operator is either a G or an F operator (for now, nested temporal operators will be added).
+        Each temporal operator is associated to a predicate function (a polytope in the state space).
+        Each temporal operator is associated to a time interval [a,b].
         """
 
-        # 1) Get the list of tasks from the formula
-        is_a_conjunction = False
-
-        # TODO: Add the OR operator
-        # Check that the provided formula is within the fragment of allowable formulas.
+        # ---- Step 1: Identify whether we have OR, AND, or a single operator ----
         if isinstance(self.formula.root, OrOperator):
-            # 1) the root operator can be an or, but it not implemented for now.
-            raise NotImplementedError(
-                "OrOperator is not implemented yet. Wait for it. it is coming soon."
-            )
-        elif isinstance(self.formula.root, AndOperator):
-            # then it is a conjunction of single formulas
-            is_a_conjunction = True
+            disjunctive_branches = self.formula.root.children
         else:
-            # otherwise it is a single formula
-            pass
+            disjunctive_branches = [self.formula.root]
 
-        # subdivide in sumbformulas
-        potential_varphi_tasks: list[Formula] = []
-        if is_a_conjunction:
-            for child_node in self.formula.root.children:
+        # ---- Step 2: Process each disjunctive branch independently ----
+        branch_start_vertices = []
+        branch_end_vertices = []
+
+        for branch_id, branch in enumerate(disjunctive_branches):
+            if isinstance(branch, AndOperator):
+                subformulas = [Formula(root=child) for child in branch.children]
+            else:
+                subformulas = [Formula(root=branch)]
+
+            prev_polyID = None
+            prev_task_polytope = None
+            t_start_next_task = self.t0
+            tb = self.t0  # end time of the previous task
+
+            # ---- Step 3: Handle each conjunct in this branch ----
+            for varphi in subformulas:
                 # take all the children nodes and check that the remaining formulas are in the predicate
-                varphi = Formula(root=child_node)
-                potential_varphi_tasks += [varphi]
 
-        else:
-            potential_varphi_tasks = [self.formula]
-
-        # TODO: When adding ORs, all the next code should be in a loop for each disjunctive branch
-
-        prev_polyID = None
-        prev_task_polytope = None
-        t_start_next_task = 0.0
-        tb = 0.0  # end time of the previous task
-
-        for varphi in potential_varphi_tasks:
-            # take all the children nodes and check that the remaining formulas are in the predicate
-
-            varphi_type, predicate_node = get_formula_type_and_predicate_node(
-                formula=varphi
-            )
-
-            # root: Union[FOp, UOp, GOp] = varphi.root  # Temporal operator of the fomula.
-            # Time interval of the formula.
-            time_interval: TimeInterval = varphi.root.interval
-            # Output matrix of the predicate node.      # TODO: The whole configuration should be constrained by the polytope so C should always be identity
-            C: np.ndarray = predicate_node.output_matrix
-
-            # Bring polytope to suitable dimension
-            curr_task_polytope = Polyhedron(
-                A=predicate_node.polytope.A @ C, b=predicate_node.polytope.b
-            )
-
-            # Define the initial polytope at time t0 so that it contains the state at time 0 if t0=0
-            # and it contains the the set at time t->t0^- otherwise
-            t_start_task = t_start_next_task
-            if varphi_type == "G":
-                # Define the two polytopes corresponding to the G operator
-                t_end = time_interval.a
-                # Set the initial time for the next polytope
-                t_start_next_task = time_interval.b
-
-            elif varphi_type == "F":
-                t_end = time_interval.b
-                # Set the initial time for the next polytope
-                t_start_next_task = time_interval.a
-
-            else:
-                raise NotImplementedError(
-                    "Only G and F operators are implemented for now."
+                varphi_type, predicate_node = get_formula_type_and_predicate_node(
+                    formula=varphi
                 )
 
-            tv_poly = None
+                # root: Union[FOp, UOp, GOp] = varphi.root  # Temporal operator of the fomula.
+                # Time interval of the formula.
+                time_interval: TimeInterval = varphi.root.interval
+                # Output matrix of the predicate node.      # TODO: The whole configuration should be constrained by the polytope so C should always be identity
+                C: np.ndarray = predicate_node.output_matrix
 
-            if abs(t_start_task - t_end) < 1e-6:
-                # This can typically happen for an always task which is active starting from t_start
-                # Two cases are possible:
-                # 1) The second polytope already contains the first one, so gamma = 0
-                # 2) The second polytope does not contain the first one, so the task is infeasible
-                # tv_poly is not necessary
-                if prev_polyID is None:
-                    # first task, check if x0 satisfies the predicate at time t_start
-                    self.check_feasibility_x0_tstart(curr_task_polytope)
+                # Bring polytope to suitable dimension
+                curr_task_polytope = Polyhedron(
+                    A=predicate_node.polytope.A @ C, b=predicate_node.polytope.b
+                )
+
+                # Define the initial polytope at time t0 so that it contains the state at time 0 if t0=0
+                # and it contains the the set at time t->t0^- otherwise
+                t_start_task = t_start_next_task
+                if varphi_type == "G":
+                    # Define the two polytopes corresponding to the G operator
+                    t_end = time_interval.a
+                    # Set the initial time for the next polytope
+                    t_start_next_task = time_interval.b
+
+                elif varphi_type == "F":
+                    t_end = time_interval.b
+                    # Set the initial time for the next polytope
+                    t_start_next_task = time_interval.a
+
                 else:
-                    self.check_feasibility_prevset_tstart(
-                        curr_task_polytope, prev_task_polytope
+                    raise NotImplementedError(
+                        "Only G and F operators are implemented for now."
                     )
-            else:
-                # A time-varying polytope is only needed when the task starts strictly before the time at which the predicate
-                # function has to be satisfied i.e. interval.a for an always operator or interval.b for an eventually operator
-                tv_poly = self.build_tv_polytope(
-                    prev_task_polytope,
-                    curr_task_polytope,
-                    t_start_task,
-                    t_end,
-                    tb,
+
+                tv_poly = None
+
+                if abs(tb - t_end) < 1e-3:
+                    # This can typically happen for an always task which is active starting from t_start
+                    # Two cases are possible:
+                    # 1) The second polytope already contains the first one, so gamma = 0
+                    # 2) The second polytope does not contain the first one, so the task is infeasible
+                    # tv_poly is not necessary
+                    if prev_polyID is None:
+                        # first task, check if x0 satisfies the predicate at time t_start
+                        self.check_feasibility_x0_tstart(curr_task_polytope)
+                    else:
+                        self.check_feasibility_prevset_tstart(
+                            curr_task_polytope, prev_task_polytope
+                        )
+                else:
+                    # A time-varying polytope is only needed when the task starts strictly before the time at which the predicate
+                    # function has to be satisfied i.e. interval.a for an always operator or interval.b for an eventually operator
+                    tv_poly = self.build_tv_polytope(
+                        prev_task_polytope,
+                        curr_task_polytope,
+                        t_start_task,
+                        t_end,
+                        tb,
+                    )
+
+                tc_poly = self.build_tc_polytope(
+                    curr_task_polytope, time_interval.a, time_interval.b
                 )
 
-            tc_poly = self.build_tc_polytope(
-                curr_task_polytope, time_interval.a, time_interval.b
-            )
+                polyID1, polyID2 = self.append_to_graph(
+                    predicate_node.node_id, prev_polyID, tv_poly, tc_poly
+                )
 
-            polyID1, polyID2 = self.append_to_graph(
-                predicate_node.node_id, prev_polyID, tv_poly, tc_poly
-            )
+                # Store branch ID for later plotting
+                self.vertex2branch[polyID1] = branch_id
+                self.vertex2branch[polyID2] = branch_id
 
-            prev_task_polytope = curr_task_polytope
-            if self.start_vertex is None:
-                self.start_vertex = polyID1
-            prev_polyID = polyID2
-            tb = time_interval.b
+                prev_task_polytope = curr_task_polytope
+                if prev_polyID is None:
+                    branch_start_vertices.append(polyID1)
+                prev_polyID = polyID2
+                tb = time_interval.b
 
-        # Add trivial vertex at the end to represent the end of the formula
-        self.end_vertex = prev_polyID + 1
+            # ---- Step 4: Save the branch end vertex ----
+            branch_end_vertices.append(prev_polyID)
+
+        # ---- Step 5: Merge branches into global start and end ----
+        self.start_vertex = self.new_special_vertex_id()
+        self.graph.add_vertex(self.start_vertex)
+        self.end_vertex = self.new_special_vertex_id()
         self.graph.add_vertex(self.end_vertex)
-        self.graph.add_edge((prev_polyID, self.end_vertex))
+
+        for s in branch_start_vertices:
+            self.graph.add_edge((self.start_vertex, s))
+        for e in branch_end_vertices:
+            self.graph.add_edge((e, self.end_vertex))
+
         zero = np.zeros(self.xdim + 1)
+        self.vertex2poly[self.start_vertex] = Point(np.hstack((self.x0, self.t0)))
         self.vertex2poly[self.end_vertex] = Point(zero)
+
+    def new_special_vertex_id(self) -> int:
+        """Generate a new unique vertex ID for special vertices like start and end."""
+        self._vertex_counter -= 1
+        return self._vertex_counter
 
     def append_to_graph(
         self,
@@ -334,7 +364,7 @@ class STLTasks2GCS:
         if max_val <= -self.r:
             return 0.0
         else:
-            return (self.r + max_val) / denom
+            return (self.r + max_val) / denom + self.eps_gamma
 
         # gamma0 = max(0.0, self.r + max_val) / denom
         # return gamma0
@@ -397,7 +427,7 @@ class STLTasks2GCS:
         if gamma_required < 0:
             gamma_required = 0.0
 
-        return gamma_required
+        return gamma_required + self.eps_gamma
 
     def minimal_gamma_dual(
         self, prev_poly: Polyhedron, next_poly: Polyhedron, t_start: float, t_end: float
@@ -501,7 +531,7 @@ class STLTasks2GCS:
 
         return True  # all constraints satisfied
 
-    def plot3D_polytopes(self, show=True, cmap_name="tab20"):
+    def plot3D_polytopes(self, show=True, cmap_name="tab10"):
         """
         Plot the polytopes in 3D (x1, x2, t) directly as convex hulls.
         Expects self.vertex2poly to map vertex IDs -> HPolyhedron objects.
@@ -515,6 +545,14 @@ class STLTasks2GCS:
         fig = plt.figure(figsize=(9, 7))
         ax = fig.add_subplot(111, projection="3d")
         cmap = cm.get_cmap(cmap_name)
+
+        # Plot the starting point
+        ax.scatter(self.x0[0], self.x0[1], self.t0, color="red", s=100, label="Start")
+
+        # One distinct base color per branch
+        branch_colors = {}
+        for bid in set(self.vertex2branch.values()):
+            branch_colors[bid] = cmap(bid % cmap.N)
 
         for vid, poly in self.vertex2poly.items():
 
@@ -537,7 +575,13 @@ class STLTasks2GCS:
             faces = hull.simplices
             poly3d = [verts[face] for face in faces]
 
-            facecolor = cmap((vid * 37) % cmap.N)
+            branch_id = self.vertex2branch.get(vid, -1)
+            base_color = branch_colors.get(branch_id, (0.5, 0.5, 0.5, 1.0))
+
+            # Make shades by mixing with white, depending on vid
+            shade_factor = 0.3 + 0.7 * ((vid % 7) / 7.0)  # between 0.3 and 1.0
+            facecolor = tuple(shade_factor * np.array(base_color[:3])) + (0.35,)
+
             coll = Poly3DCollection(
                 poly3d, alpha=0.35, facecolor=facecolor, edgecolor="k"
             )
@@ -607,7 +651,7 @@ if __name__ == "__main__":
         tbF3 = 10.0
         formula3 = FOp(taF3, tbF3) >> h4
 
-        formula = formula1 & formula2 & formula3
+        formula = formula1 & formula2 | formula3
 
         formula.show_graph()
 

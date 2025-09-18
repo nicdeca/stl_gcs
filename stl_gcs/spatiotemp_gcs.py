@@ -1,3 +1,4 @@
+# from networkx import degree
 import numpy as np
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
@@ -5,6 +6,8 @@ from matplotlib.patches import Polygon
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib import cm
 from scipy.spatial import ConvexHull
+
+import time
 
 
 from math import floor
@@ -48,19 +51,18 @@ from stl_gcs.graph import Graph
 
 class SpatioTemporalBsplineGraphOfConvexSets(Graph):
     """
-    Problem setup and solver for planning a piecewise bezier curve trajectory
+    Problem setup and solver for planning a piecewise Bspline curve trajectory
     through a graph of convex sets. The graph setup is as follows:
 
         - Each vertex is associated with a convex set
-        - Each convex set contains a Bezier curve
-        - The optimal path is a sequence of Bezier curves. These curves
+        - Each convex set contains a Bspline curve
+        - The optimal path is a sequence of Bspline curves. These curves
           must satisfy continuity (and continuous differentiability) constraints.
         - The goal is to find a (minimum cost) trajectory from a given starting
           point to the target vertex
-        - The target vertex is just a dummy vertex not associated with any
-          constraints on the curve: it just indicates that the task is complete.
-        - Instead, differently from other GCS formulations, the starting
-          vertex is associated with a set and the related constraints
+        - The target and source vertices are just dummy vertices not associated with any
+          constraints on the curve: they just indicate that the task is complete.
+
 
     Here, we have a bspline associated with space and a bspline associated with time.
     "r" refers to the spatial part of the trajectory, "p" refers to the time/duration part of the trajectory.
@@ -74,9 +76,10 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         start_vertex: int,
         end_vertex: int,
         start_point: np.ndarray,
-        order: int = 3,
+        degree: int = 3,
         continuity: int = 1,
         pdot_min: float = 1e-3,
+        num_ctrl_pts: int | None = None,
     ):
         """
         Construct a graph of convex sets
@@ -88,10 +91,15 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             start_vertex:  index of the starting vertex
             end_vertex:    index of the end/target vertex
             start_point:   initial point of the path (include space and time [x,t])
-            order:         order of bezier curve under consideration
+            degree:        degree of Bspline curve under consideration, which is
+                            order-1. E.g., degree=3 is a cubic Bspline.
             continuity:    number of continuous derivatives of the curve
             pdot_min:      minimum derivative of time wrt the spline variable.
                            Used to regularize higher order derivatives.
+            num_ctrl_pts: number of control points for each Bspline.
+                                If None, will be set to order+3. The minimum
+                                number of control points is order+1, which corresponds
+                                to Bezier curves.
         """
         # General graph constructor
         super().__init__(vertices, edges)
@@ -116,12 +124,22 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         self.start_vertex = start_vertex
         self.end_vertex = end_vertex
 
-        # Bezier curves can guarantee continuity of n-1 derivatives
-        assert continuity < order
-        self.order = order
+        # Bspline curves can guarantee continuity of degree-1 derivatives
+        self.degree = degree  # polynomial degree, e.g. 3 for cubic
+        self.order = degree + 1
+        assert continuity < self.order
         self.continuity = continuity
 
         self.pdot_min = pdot_min
+
+        if num_ctrl_pts is not None:
+            assert num_ctrl_pts >= self.order
+            self.num_ctrl_pts = num_ctrl_pts
+        else:
+            extra_pts = 2
+            self.num_ctrl_pts = (
+                self.order + extra_pts
+            )  # default: extra_pts = 2 more than a Bezier
 
         # Create decision variables + trajectories
         self._define_variables_and_trajectories()
@@ -138,10 +156,10 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         # Create symbolic variables for the spatial and temporal parts of the trajectory
         self.u_vars = MakeMatrixContinuousVariable(
-            self.order + 1, self.spatiotemporal_dim, "xu"
+            self.num_ctrl_pts, self.spatiotemporal_dim, "xu"
         )
         self.v_vars = MakeMatrixContinuousVariable(
-            self.order + 1, self.spatiotemporal_dim, "xv"
+            self.num_ctrl_pts, self.spatiotemporal_dim, "xv"
         )
 
         # Extract spatial and temporal parts of the variables
@@ -156,26 +174,42 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         # Create B-spline trajectories for the spatial and temporal parts
         self.u_r_trajectory = BsplineTrajectory_[Expression](
             BsplineBasis_[Expression](
-                self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0.0, 1.0
+                self.order,
+                self.num_ctrl_pts,
+                KnotVectorType.kClampedUniform,
+                0.0,
+                1.0,
             ),
             self.u_spatial.T,
         )
         self.u_h_trajectory = BsplineTrajectory_[Expression](
             BsplineBasis_[Expression](
-                self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0.0, 1.0
+                self.order,
+                self.num_ctrl_pts,
+                KnotVectorType.kClampedUniform,
+                0.0,
+                1.0,
             ),
             np.expand_dims(self.u_temporal, 0),
         )
 
         self.v_r_trajectory = BsplineTrajectory_[Expression](
             BsplineBasis_[Expression](
-                self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0.0, 1.0
+                self.order,
+                self.num_ctrl_pts,
+                KnotVectorType.kClampedUniform,
+                0.0,
+                1.0,
             ),
             self.v_spatial.T,
         )
         self.v_h_trajectory = BsplineTrajectory_[Expression](
             BsplineBasis_[Expression](
-                self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0.0, 1.0
+                self.order,
+                self.num_ctrl_pts,
+                KnotVectorType.kClampedUniform,
+                0.0,
+                1.0,
             ),
             np.expand_dims(self.v_temporal, 0),
         )
@@ -230,7 +264,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         control_points = self.u_r_trajectory.control_points()
 
         A = []
-        for i in range(self.order):
+        for i in range(self.num_ctrl_pts - 1):
             with warnings.catch_warnings():
                 # ignore numpy warnings about subtracting symbolics
                 warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -240,8 +274,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         # Apply a cost to the starting segment of each edge.
         for edge in self.gcs.Edges():
-            # if edge.u().id() == self.start_vertex:
-            #     continue
+            if edge.u() == self.source:
+                continue
             # if edge.v().id() == self.end_vertex:
             #     continue
             x = edge.xu()
@@ -270,8 +304,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         )
 
         for edge in self.gcs.Edges():
-            # if edge.u().id() == self.start_vertex:
-            #     continue
+            if edge.u() == self.source:
+                continue
             # if edge.v().id() == self.end_vertex:
             #     continue
 
@@ -311,8 +345,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             energy_cost = PerspectiveQuadraticCost(H_reg, np.zeros(H_reg.shape[0]))
 
             for edge in self.gcs.Edges():
-                # if edge.u().id() == self.start_vertex:
-                #     continue
+                if edge.u() == self.source:
+                    continue
                 # if edge.v().id() == self.end_vertex:
                 #     continue
                 edge.AddCost(Binding[Cost](energy_cost, edge.xu()))
@@ -320,28 +354,29 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
     # -----------------------------------------------------------
     # -------------------- AddDerivativeCost --------------------
 
-    def AddDerivativeCost(self, degree: int, weight: float = 1.0, norm: str = "L2"):
+    def AddDerivativeCost(
+        self, deriv_order: int, weight: float = 1.0, norm: str = "L2"
+    ):
         """
         Add a penalty on the derivative of the path. We do this by penalizing
         some norm of the control points of the derivative of the path. Notice
         that we are not minimizing derivatives wrt time, but rather the
-        derivative of the Bezier curve wrt its parameter. This is still a
+        derivative of the Bspline curve wrt its parameter. This is still a
         reasonable proxy for smoothness of the path.
 
         Args:
-            degree: The derivative to penalize. degree=0 is the original
-                    trajectory, degree=1 is the first derivative. Notice that
+            deriv_order: The derivative to penalize. deriv_order=0 is the original
+                    trajectory, deriv_order=1 is the first derivative. Notice that
                     we can only penalize derivatives up to order-1.
             weight: Weight for this cost, scalar
             norm:   Norm to use to when evaluating distance between control
                     points (see above)
         """
         assert norm in ["L1", "L2", "L2_squared"], "invalid length norm"
-        assert degree >= 0
-        assert degree < self.order
+        assert 0 <= deriv_order < self.order
 
         # Get a symbolic version of the i^th derivative of a segment
-        path_deriv = self.u_r_trajectory.MakeDerivative(degree)
+        path_deriv = self.u_r_trajectory.MakeDerivative(deriv_order)
 
         # Get a symbolic expression for the difference between subsequent
         # control points in the i^th derivative, in terms of the original
@@ -349,7 +384,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         deriv_control_points = path_deriv.control_points()
 
         A = []
-        for i in range(self.order - degree + 1):
+        for i in range(len(deriv_control_points) - 1):
             with warnings.catch_warnings():
                 # ignore numpy warnings about subtracting symbolics
                 warnings.simplefilter("ignore", category=RuntimeWarning)
@@ -358,12 +393,12 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         # Apply a cost to the starting segment of each edge.
         for edge in self.gcs.Edges():
-            # if edge.u().id() == self.start_vertex:
-            #     continue
+            if edge.u() == self.source:
+                continue
             # if edge.v().id() == self.end_vertex:
             #     continue
             x = edge.xu()
-            for i in range(self.order - degree + 1):
+            for i in range(len(deriv_control_points) - 1):
                 if norm == "L1":
                     cost = L1NormCost(weight * A[i], np.zeros(self.dim))
                 elif norm == "L2":
@@ -378,25 +413,30 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
     # -------------------- addDerivativeRegularization --------------------
 
     def addDerivativeRegularization(
-        self, weight_r: float = 1.0, weight_h: float = 1.0, order: int = 1
+        self, weight_r: float = 1.0, weight_h: float = 1.0, deriv_order: int = 1
     ):
+        """
+        Regularize derivative of the B-spline by penalizing differences between
+        consecutive derivative control points.
 
-        assert isinstance(order, int) and 2 <= order <= self.order
+        deriv_order: 1 for first derivative, 2 for second, etc.
+        """
+        assert isinstance(deriv_order, int) and 2 <= deriv_order <= self.order
         weights = [weight_r, weight_h]
-        for weight in weights:
-            assert isinstance(weight, float) or isinstance(weight, int)
 
         trajectories = [self.u_r_trajectory, self.u_h_trajectory]
         for traj, weight in zip(trajectories, weights):
-            derivative_control = traj.MakeDerivative(order).control_points()
+            derivative_control = traj.MakeDerivative(deriv_order).control_points()
             for c in derivative_control:
                 A_ctrl = DecomposeLinearExpressions(c, self.u_vars.flatten())
-                H = A_ctrl.T.dot(A_ctrl) * 2 * weight / (1 + self.order - order)
+                H = (
+                    A_ctrl.T.dot(A_ctrl) * 2 * weight
+                )  # / (1 + self.order - deriv_order)
                 reg_cost = QuadraticCost(H, np.zeros(H.shape[0]), 0)
 
                 for edge in self.gcs.Edges():
-                    # if edge.u().id() == self.start_vertex:
-                    #     continue
+                    if edge.u() == self.source:
+                        continue
                     # if edge.v().id() == self.end_vertex:
                     #     continue
                     edge.AddCost(Binding[Cost](reg_cost, edge.xu()))
@@ -429,8 +469,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             # self.deriv_constraints.append(velocity_con)
 
             for edge in self.gcs.Edges():
-                # if edge.u().id() == self.start_vertex:
-                #     continue
+                if edge.u() == self.source:
+                    continue
                 # if edge.v().id() == self.end_vertex:
                 #     continue
                 edge.AddConstraint(Binding[Constraint](velocity_con, edge.xu()))
@@ -451,8 +491,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             )
 
             for edge in self.gcs.Edges():
-                # if edge.u().id() == self.start_vertex:
-                #     continue
+                if edge.u() == self.source:
+                    continue
                 edge.AddConstraint(Binding[Constraint](time_con, edge.xu()))
 
     # ----------------------------------------------------------------------
@@ -489,6 +529,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         # Apply the continuity constraints to each edge in the graph
         for edge in self.gcs.Edges():
+            if edge.u() == self.source:
+                continue
             if edge.v() != self.target:
                 edge_vars = np.concatenate((edge.xu(), edge.xv()))
                 for c_con in continuity_constraints:
@@ -510,26 +552,44 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         each derivative order k.
         """
 
+        max_conditions = self.num_ctrl_pts - self.degree  # max per endpoint
+
+        if self.continuity > max_conditions:
+            raise ValueError(
+                f"[Warning] Overconstrained: trying to fix {self.continuity} "
+                f"conditions per endpoint with only {max_conditions} available "
+                f"(degree={self.degree}, num_ctrl_pts={self.num_ctrl_pts})"
+            )
+
         # --- Start constraints (source vertex) ---
-        for k in range(1, self.order):  # derivative order (1 .. order-1)
-            for i in range(self.dim):
-                # All control points [0..k] in this coordinate must be equal
-                base_idx = i
-                for j in range(1, k + 1):
-                    self.source.AddConstraint(
-                        self.source.x()[base_idx]
-                        == self.source.x()[j * self.spatiotemporal_dim + i]
-                    )
+        for edge in self.source_edges:
+            xv = edge.xv()  # variables at target vertex of this edge
+
+            # 1. Pin first control point to start_point
+            for i in range(self.spatiotemporal_dim):
+                edge.AddConstraint(xv[i] == self.start_point[i])
+
+            # 2. Enforce zero derivatives by making first k+1 control points equal
+            # For clamped B-spline, derivative k = 0..order-1 is zero if first k+1 points equal
+            for k in range(1, self.continuity + 1):
+                for i in range(self.dim):
+                    base_idx = i
+                    for j in range(1, k + 1):
+                        edge.AddConstraint(
+                            xv[base_idx] == xv[j * self.spatiotemporal_dim + i]
+                        )
 
         # --- End constraints (target edges) ---
         for edge in self.target_edges:
             xu = edge.xu()
-            for k in range(1, self.order):  # derivative order
+            for k in range(1, self.continuity + 1):
                 for i in range(self.dim):
                     # Last (k+1) control points must be equal
-                    last_idx = self.spatiotemporal_dim * self.order + i
+                    last_idx = self.spatiotemporal_dim * (self.num_ctrl_pts - 1) + i
                     for j in range(1, k + 1):
-                        prev_idx = self.spatiotemporal_dim * (self.order - j) + i
+                        prev_idx = (
+                            self.spatiotemporal_dim * ((self.num_ctrl_pts - 1) - j) + i
+                        )
                         edge.AddConstraint(xu[last_idx] == xu[prev_idx])
 
     # ------------------------------------------------------------------
@@ -538,7 +598,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
     def SetupShortestPathProblem(self):
         """
         Formulate a shortest path through convex sets problem where the path is
-        composed of bezier curves that must be contained in each convex set.
+        composed of Bspline curves that must be contained in each convex set.
 
         Returns:
             source: Drake Gcs Vertex corresponding to the initial convex set
@@ -548,26 +608,28 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         # control point must be contained in the corresponding region. This is
         # done by extending the convex set to the Cartesian power of order+1
         # copies of itself.
-        gcs_verts = {}  # map our vertices to GCS vertices
+        self.gcs_verts = {}  # map our vertices to GCS vertices
         for v in self.vertices:
-            if v == self.end_vertex:
-                gcs_verts[v] = self.gcs.AddVertex(self.regions[v])
+            if v == self.start_vertex:
+                self.gcs_verts[v] = self.gcs.AddVertex(self.regions[v])
+            elif v == self.end_vertex:
+                self.gcs_verts[v] = self.gcs.AddVertex(self.regions[v])
             else:
-                gcs_verts[v] = self.gcs.AddVertex(
-                    self.regions[v].CartesianPower(self.order + 1)
+                self.gcs_verts[v] = self.gcs.AddVertex(
+                    self.regions[v].CartesianPower(self.num_ctrl_pts)
                 )
 
         # Define edges
         for e in self.edges:
             # Get vertex IDs of source and target for this edge
-            u = gcs_verts[e[0]]
-            v = gcs_verts[e[1]]
+            u = self.gcs_verts[e[0]]
+            v = self.gcs_verts[e[1]]
 
             self.gcs.AddEdge(u, v)
 
         # Define source and target vertices
-        self.source = gcs_verts[self.start_vertex]
-        self.target = gcs_verts[self.end_vertex]
+        self.source = self.gcs_verts[self.start_vertex]
+        self.target = self.gcs_verts[self.end_vertex]
 
         self.set_source_target_edges()
 
@@ -583,9 +645,6 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             # This sets only the first control point
             self.source.AddConstraint(self.source.x()[i] == self.start_point[i])
 
-        # Allow access to GCS vertices later
-        self.gcs_verts = gcs_verts
-
         return
 
     # -----------------------------------------------------------
@@ -597,6 +656,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         convex_relaxation: bool = False,
         preprocessing: bool = True,
         max_rounded_paths: int = 0,
+        convex_refinement: bool = False,
         solver: str = "mosek",
     ):
         """
@@ -631,19 +691,31 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         options.solver_options = solver_opts
 
         # Solve the problem
+        start_time = time.time()
         result = self.gcs.SolveShortestPath(self.source, self.target, options)
+        print(f"Solve time: {time.time()-start_time:.2f} seconds")
         if not result.is_success():
             print("GCS failed to find a solution")
             return result
 
-        # If we solved the convex relaxation, refine the solution using
-        # convex restriction
-        # if convex_relaxation:
-        #     # Get the optimal path
-        #     path = self.gcs.GetSolutionPath(self.source, self.target, result)
-        #     result = self.gcs.SolveConvexRestriction(
-        #         path, options=options, initial_guess=result
-        #     )
+        if convex_refinement:
+            print(
+                "===================================================================="
+            )
+            print("Starting convex refinement")
+            print(
+                "===================================================================="
+            )
+            start_time = time.time()
+            # Get the optimal path
+            path = self.gcs.GetSolutionPath(self.source, self.target, result)
+            result = self.gcs.SolveConvexRestriction(
+                path, options=options, initial_guess=result
+            )
+            # print(f"Refinement time: {time.time()-start_time:.2f} seconds")
+            if not result.is_success():
+                print("Convex restriction failed to find a solution")
+                return result
 
         return result
 
@@ -676,7 +748,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         all_points = []  # collect all vertices for autoscaling
 
         for vertex, region in self.regions.items():
-            if vertex == self.end_vertex:
+            if vertex == self.end_vertex or vertex == self.start_vertex:
                 continue  # skip trivial target
 
             v = VPolytope(region).vertices().T
@@ -722,42 +794,34 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
     def _extract_solution_raw(self, result):
         """
-        Helper function to extract a sequence of spatio-temporal Bspline
-        trajectories from the solution.
+        Extract a sequence of spatio-temporal B-spline trajectories along the optimal path.
         """
         curves = []
 
-        def get_outgoing_edge(vertex):
-            edge = None
-            phi = -1.0
-            for e in self.gcs.Edges():
-                if (e.u() == vertex) and result.GetSolution(e.phi()) > phi:
-                    edge = e
-                    phi = result.GetSolution(e.phi())
-            return edge
+        # Get the optimal path edges from the GCS
+        path_edges = self.gcs.GetSolutionPath(self.source, self.target, result)
 
-        v = self.gcs_verts[self.start_vertex]
-        while v != self.gcs_verts[self.end_vertex]:
-            e = get_outgoing_edge(v)
+        for e in path_edges:
+            # Skip edges starting at the source if it's just a point
+            if e.u() == self.source:
+                continue
+
             xu = result.GetSolution(e.xu())
-            control_points = xu.reshape(self.order + 1, -1)
+            control_points = xu.reshape(self.num_ctrl_pts, -1)
+
             basis = BsplineBasis(
-                self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0, 1
+                self.order, self.num_ctrl_pts, KnotVectorType.kClampedUniform, 0, 1
             )
             curves.append(BsplineTrajectory(basis, control_points.T))
-            v = e.v()
 
         return curves
 
     def ExtractSolution(self, result):
         """
-        Extract a sequence of Bspline trajectories for space and time.
-
-        Args:
-            result: MathematicalProgramResult from calling SolveShortestPath.
+        Extract spatial and temporal B-spline trajectories along the optimal path.
 
         Returns:
-            A tuple containing two lists: (spatial_trajectories, temporal_trajectories).
+            (spatial_trajectories, temporal_trajectories)
         """
         spatial_trajectories = []
         temporal_trajectories = []
@@ -767,22 +831,18 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         for traj in raw_trajectories:
             control_points = np.array(traj.control_points()).T
 
+            # Split spatial vs temporal components
             spatial_control_points = control_points[:, :-1]
             temporal_control_points = control_points[:, -1]
 
-            # Create a Bspline for the spatial part
             spatial_trajectories.append(
                 BsplineTrajectory(traj.basis(), spatial_control_points.T)
             )
-
-            # Create a Bspline for the temporal part
-            # The key is to reshape the temporal control points correctly
-            # It needs to be a 2D array with shape (1, num_control_points)
             temporal_trajectories.append(
                 BsplineTrajectory(traj.basis(), temporal_control_points.reshape(1, -1))
             )
 
-        return (spatial_trajectories, temporal_trajectories)
+        return spatial_trajectories, temporal_trajectories
 
     # -----------------------------------------------------------
     # -------------------- AnimateSolution ----------------------
@@ -860,7 +920,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         folder="results",
     ):
         """
-        Plot solution paths (2D or 3D).
+        Plot solution paths (2D or 3D) along the optimal path returned by GCS.
         """
         fig = plt.gcf()
 
@@ -868,61 +928,55 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             # create 3D axis if not already present
             if not hasattr(fig, "_ax3d"):
                 ax = fig.add_subplot(111, projection="3d")
-                fig._ax3d = ax  # store so we reuse the same axis
+                fig._ax3d = ax
             else:
                 ax = fig._ax3d
         else:
             ax = plt.gca()
 
-        for edge in self.gcs.Edges():
-            phi = result.GetSolution(edge.phi())
+        # Use only edges in the optimal path
+        path_edges = self.gcs.GetSolutionPath(self.source, self.target, result)
+
+        for edge in path_edges:
+            if edge.u() == self.source:
+                continue  # skip trivial edges from source if needed
+
             xu = result.GetSolution(edge.xu())
+            control_points = xu.reshape(self.num_ctrl_pts, -1)
 
-            if phi > 0.0:
-                control_points = xu.reshape(self.order + 1, -1)
-                basis = BsplineBasis(
-                    self.order + 1, self.order + 1, KnotVectorType.kClampedUniform, 0, 1
-                )
-                path = BsplineTrajectory(basis, control_points.T)
+            basis = BsplineBasis(
+                self.order, self.num_ctrl_pts, KnotVectorType.kClampedUniform, 0, 1
+            )
+            path = BsplineTrajectory(basis, control_points.T)
 
-                if plot_control_points:
-                    if self.spatiotemporal_dim == 2:
-                        ax.plot(
-                            control_points[:, 0],
-                            control_points[:, 1],
-                            "o--",
-                            color="red",
-                            alpha=phi,
-                        )
-                    else:
-                        ax.plot(
-                            control_points[:, 0],
-                            control_points[:, 1],
-                            control_points[:, 2],
-                            "o--",
-                            color="red",
-                            alpha=phi,
-                        )
+            if plot_control_points:
+                if self.spatiotemporal_dim == 2:
+                    ax.plot(
+                        control_points[:, 0],
+                        control_points[:, 1],
+                        "o--",
+                        color="red",
+                        alpha=1.0,
+                    )
+                else:
+                    ax.plot(
+                        control_points[:, 0],
+                        control_points[:, 1],
+                        control_points[:, 2],
+                        "o--",
+                        color="red",
+                        alpha=1.0,
+                    )
 
-                if plot_path:
-                    curve = path.vector_values(np.linspace(0, 1))
-                    if self.spatiotemporal_dim == 2:
-                        ax.plot(
-                            curve[0, :],
-                            curve[1, :],
-                            color="blue",
-                            linewidth=2,
-                            alpha=phi,
-                        )
-                    else:
-                        ax.plot(
-                            curve[0, :],
-                            curve[1, :],
-                            curve[2, :],
-                            color="blue",
-                            linewidth=2,
-                            alpha=phi,
-                        )
+            if plot_path:
+                curve = path.vector_values(np.linspace(0, 1))
+                if self.spatiotemporal_dim == 2:
+                    ax.plot(curve[0, :], curve[1, :], color="blue", linewidth=2)
+                else:
+                    ax.plot(
+                        curve[0, :], curve[1, :], curve[2, :], color="blue", linewidth=2
+                    )
+
         if save_fig:
             plt.savefig(f"{folder}/solution.{format}", format=format, dpi=300)
 
@@ -993,7 +1047,7 @@ if __name__ == "__main__":
         tbF3 = 10.0
         formula3 = FOp(taF3, tbF3) >> h4
 
-        formula = formula1 & formula2 & formula3
+        formula = formula1 & formula2 | formula3
 
         # formula.show_graph()
 
@@ -1019,7 +1073,7 @@ if __name__ == "__main__":
             start_vertex,
             end_vertex,
             start_point,
-            order=3,
+            degree=3,
             continuity=2,
         )
 
@@ -1028,7 +1082,7 @@ if __name__ == "__main__":
         # gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
         gcs.addTimeCost(weight=1.0)
         # gcs.addPathEnergyCost(weight=0.5)
-        gcs.addDerivativeRegularization(order=2)
+        gcs.addDerivativeRegularization(deriv_order=2)
         gcs.addVelocityLimits(
             lower_bound=-0.5 * np.ones(2), upper_bound=0.5 * np.ones(2)
         )

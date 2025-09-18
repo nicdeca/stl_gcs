@@ -155,6 +155,8 @@ class SpatioTemporalBspline:
         filename : str, optional
             Name of the file to save (default is based on order).
         """
+        import matplotlib.pyplot as plt
+
         t0, tf = self.time_span()
         ts = np.linspace(t0, tf, num_samples)
 
@@ -197,6 +199,83 @@ class SpatioTemporalBspline:
                     filename = "velocity_vs_time"
                 elif order == 2:
                     filename = "acceleration_vs_time"
+            plt.savefig(f"{folder}/{filename}.{format}")
+
+        if show:
+            plt.show()
+
+    def plot_spatial(
+        self,
+        num_samples=200,
+        show=True,
+        ax=None,
+        plot_control_points=False,
+        labels=("x", "y"),
+        save_fig=False,
+        format="png",
+        folder="results",
+        filename="spatial_trajectory",
+        **kwargs,
+    ):
+        """
+        Plot the spatial trajectory in the 2D workspace.
+
+        Parameters
+        ----------
+        num_samples : int
+            Number of time samples.
+        show : bool
+            If True, call plt.show() at the end.
+        ax : matplotlib.axes.Axes, optional
+            If provided, plot into this axis. Otherwise, use plt.gca().
+        plot_control_points : bool
+            If True, also plot the control points of each r_segment.
+        labels : tuple of str
+            Labels for spatial dimensions, e.g. ("x", "y").
+        save_fig : bool
+            If True, save the figure.
+        format : str
+            Format for saving the figure (e.g. 'png', 'pdf').
+        folder : str
+            Destination folder for saved figure.
+        filename : str
+            Name of the file to save.
+        kwargs : dict
+            Extra arguments passed to ax.plot().
+        """
+        import matplotlib.pyplot as plt
+
+        t0, tf = self.time_span()
+        ts = np.linspace(t0, tf, num_samples)
+
+        # Evaluate spatial trajectory
+        xs = np.array([self.eval(t) for t in ts])
+
+        # Ensure 2D
+        if xs.shape[1] < 2:
+            raise ValueError("Spatial trajectory must have at least 2 dimensions")
+
+        # Get axis
+        if ax is None:
+            ax = plt.gca()
+
+        # Plot trajectory
+        ax.plot(xs[:, 0], xs[:, 1], label="trajectory", **kwargs)
+
+        # Plot control points if requested
+        if plot_control_points:
+            for r in self.r_segments:
+                # cps = r.control_points()
+                cps = np.array([cp.flatten() for cp in r.control_points()])
+                ax.plot(cps[:, 0], cps[:, 1], "o--", alpha=0.5, label="control points")
+
+        ax.set_xlabel(labels[0])
+        ax.set_ylabel(labels[1])
+        ax.legend()
+        ax.grid(True)
+
+        # Save the plot
+        if save_fig:
             plt.savefig(f"{folder}/{filename}.{format}")
 
         if show:
@@ -319,51 +398,77 @@ if __name__ == "__main__":
         pA = np.array([-0.3, 0.2])
         pB = np.array([0.35, 0.5])
         pC = np.array([0.35, -0.5])
+        pD = np.array([-0.4, -0.4])
+        pE = np.array([0.1, -0.3])
+        pF = np.array([0.2, 0.4])
+        pG = np.array([0.5, 0.0])
+        pH = np.array([-0.6, 0.3])
 
-        # Size of the square around the goal (half side length)
-        dA = 0.45
-        dB = 0.45
-        dC = 0.45
+        # Sizes of the square around the goal (half side length)
+        dA, dB, dC, dD, dE, dF, dG, dH = 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25
+        # dA, dB, dC, dD, dE, dF, dG, dH = 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.4, 0.4
 
-        # # Test
-        # print(np.linalg.norm(x0 - pA))
+        # Predicates
+        hA = BoxPredicate2d(size=dA, center=pA, name="Goal A")
+        hB = BoxPredicate2d(size=dB, center=pB, name="Goal B")
+        hC = BoxPredicate2d(size=dC, center=pC, name="Goal C")
+        hD = BoxPredicate2d(size=dD, center=pD, name="Goal D")
+        hE = BoxPredicate2d(size=dE, center=pE, name="Goal E")
+        hF = BoxPredicate2d(size=dF, center=pF, name="Goal F")
+        hG = BoxPredicate2d(size=dG, center=pG, name="Goal G")
+        hH = BoxPredicate2d(size=dH, center=pH, name="Goal H")
 
-        # creates a box over the first three dimension  of the system (so on the positon).
-        center = np.array([-0.0, 0.0])
-        hX = BoxPredicate2d(size=dx, center=center, name="State bounds")
-        h1 = BoxPredicate2d(size=dA, center=pA, name="Goal A")
+        # # Temporal operators
+        # f1 = GOp(0.0, 3.0) >> hA  # Always at A
+        # f2 = FOp(4.0, 6.0) >> hB  # Eventually B
+        # f3 = FOp(5.0, 8.0) >> hC  # Eventually C
+        # f4 = GOp(2.0, 5.0) >> hD  # Always D
+        # f5 = FOp(6.0, 9.0) >> hE  # Eventually E
+        # f6 = FOp(1.0, 4.0) >> hF  # Eventually F
+        # f7 = GOp(3.0, 7.0) >> hG  # Always at G
+        # f8 = FOp(2.0, 6.0) >> hH  # Eventually H
 
-        h2C = np.array([-10, 1])
-        h2d = -2
-        # h2H = Polyhedron(h2C, h2d)
-        h2 = Geq(dims=[0, 1], state_dim=2, bound=h2d, name="Halfplane predicate")
+        # # Conjunctions (single temporal operators per child)
+        # conj1 = f1 & f2  # Plan 1: stay at A, eventually B
+        # conj2 = f4 & f3  # Plan 2: eventually C, always D
+        # conj3 = f6 & f5  # Plan 3: eventually E, eventually F
 
-        h3 = BoxPredicate2d(size=dB, center=pB, name="Goal B")
-        h4 = BoxPredicate2d(size=dC, center=pC, name="Goal C")
+        # conj4 = f1 & f2 & f7  # Stay at A, eventually B, always G
+        # conj5 = f3 & f5 & f8  # Eventually C, eventually E, eventually H
+        # conj6 = f4 & f6 & f7 & f8  # Always D, eventually F, always G, eventually H
+        # Plan 1
+        conj1 = (GOp(0.0, 3.0) >> hA) & (FOp(4.0, 6.0) >> hB)
 
-        # --------- Formula definition -------------
-        taG1 = 0.0
-        tbG1 = 4.0
-        formula1 = GOp(taG1, tbG1) >> h1
+        # Plan 2
+        conj2 = (GOp(2.0, 5.0) >> hD) & (FOp(5.0, 8.0) >> hC)
 
-        taU2 = 5.0
-        tbU2 = 8.0
-        # formula2 = (GOp(0.0, taU2)) & (FOp(taU2, tbU2) >> h3)
-        formula2 = FOp(taU2, tbU2) >> h3
+        # Plan 3
+        conj3 = (FOp(1.0, 4.0) >> hF) & (FOp(6.0, 9.0) >> hE)
 
-        taF3 = 8.0
-        tbF3 = 10.0
-        formula3 = FOp(taF3, tbF3) >> h4
+        # Plan 4
+        conj4 = (GOp(0.0, 3.0) >> hA) & (FOp(4.0, 6.0) >> hB) & (GOp(7.0, 9.0) >> hG)
 
-        formula = formula1 & formula2 & formula3
+        # Plan 5
+        conj5 = (
+            (FOp(5.0, 8.0) >> hC) & (FOp(10.0, 11.0) >> hE) & (FOp(12.0, 16.0) >> hH)
+        )
 
-        # formula.show_graph()
+        # Plan 6
+        conj6 = (
+            (GOp(2.0, 3.0) >> hD)
+            & (FOp(4.0, 4.5) >> hF)
+            & (GOp(5.0, 7.0) >> hG)
+            & (FOp(10.0, 11.0) >> hH)
+        )
 
-        # plt.show()
+        formula = conj1 | conj2 | conj3 | conj4 | conj5 | conj6
+
+        # Disjunction of the three conjunctions (three alternative plans)
+        formula = conj1 | conj2 | conj3 | conj4 | conj5 | conj6
 
         stl_tasks2gcs = STLTasks2GCS(formula=formula, xdim=2, r=0.05, x0=x0)
 
-        # stl_tasks2gcs.plot3D_polytopes()
+        stl_tasks2gcs.plot3D_polytopes()
 
         graph = stl_tasks2gcs.graph
         vertices = graph.vertices
@@ -381,7 +486,7 @@ if __name__ == "__main__":
             start_vertex,
             end_vertex,
             start_point,
-            order=3,
+            degree=3,
             continuity=2,
         )
 
@@ -390,10 +495,10 @@ if __name__ == "__main__":
         # gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
         gcs.addTimeCost(weight=1.0)
         # gcs.addPathEnergyCost(weight=0.5)
-        gcs.addDerivativeRegularization(order=2)
-        gcs.addVelocityLimits(
-            lower_bound=-0.5 * np.ones(2), upper_bound=0.5 * np.ones(2)
-        )
+        gcs.addDerivativeRegularization(deriv_order=2)
+        # gcs.addVelocityLimits(
+        #     lower_bound=-0.5 * np.ones(2), upper_bound=0.5 * np.ones(2)
+        # )
 
         # Plot the scenario
         plt.figure(figsize=(8, 8))
