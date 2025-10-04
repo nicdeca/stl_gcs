@@ -77,8 +77,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         end_vertex: int,
         start_point: np.ndarray,
         degree: int = 3,
-        continuity: int = 1,
-        pdot_min: float = 1e-3,
+        continuity: int | None = None,
+        hdot_min: float = 1e-3,
         num_ctrl_pts: int | None = None,
     ):
         """
@@ -94,7 +94,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             degree:        degree of Bspline curve under consideration, which is
                             order-1. E.g., degree=3 is a cubic Bspline.
             continuity:    number of continuous derivatives of the curve
-            pdot_min:      minimum derivative of time wrt the spline variable.
+            hdot_min:      minimum derivative of time wrt the spline variable.
                            Used to regularize higher order derivatives.
             num_ctrl_pts: number of control points for each Bspline.
                                 If None, will be set to order+3. The minimum
@@ -127,10 +127,6 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         # Bspline curves can guarantee continuity of degree-1 derivatives
         self.degree = degree  # polynomial degree, e.g. 3 for cubic
         self.order = degree + 1
-        assert continuity < self.order
-        self.continuity = continuity
-
-        self.pdot_min = pdot_min
 
         if num_ctrl_pts is not None:
             assert num_ctrl_pts >= self.order
@@ -141,12 +137,20 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 self.order + extra_pts
             )  # default: extra_pts = 2 more than a Bezier
 
+        if continuity is None:
+            self.continuity = int(min(self.num_ctrl_pts / 2 - 1, self.order))
+        else:
+            assert continuity <= self.order
+            self.continuity = continuity
+
+        self.hdot_min = hdot_min
+
         # Create decision variables + trajectories
         self._define_variables_and_trajectories()
 
         # Create the GCS problem
         self.gcs = GraphOfConvexSets()
-        self.SetupShortestPathProblem()
+        self.setup_shortest_path_problem()
 
     # -------------------------------------------------------
     # ------- _define_symbolic_variables_and_trajectories ---
@@ -234,9 +238,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 self.target_edges.append(edge)
 
     # -------------------------------------------------------
-    # -------------------- AddLengthCost --------------------
+    # -------------------- add_length_cost --------------------
 
-    def AddLengthCost(self, weight: float = 1.0, norm: str = "L2"):
+    def add_length_cost(self, weight: float = 1.0, norm: str = "L2"):
         """
         Add to each edge a penalty on the distance between control points,
         which is an overapproximation of total path length.
@@ -293,7 +297,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
     # ----------------------------------------------------------
     # -------------------- Add time cost -----------------------
-    def addTimeCost(self, weight: float = 1.0):
+    def add_time_cost(self, weight: float = 1.0):
         assert isinstance(weight, float) or isinstance(weight, int)
 
         u_time_control = self.u_h_trajectory.control_points()
@@ -312,8 +316,8 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             edge.AddCost(Binding[Cost](time_cost, edge.xu()))
 
     # ----------------------------------------------------------
-    # -------------------- addPathEnergyCost -------------------
-    def addPathEnergyCost(self, weight: float | np.ndarray):
+    # -------------------- add_path_energy_cost -------------------
+    def add_path_energy_cost(self, weight: float | np.ndarray):
         raise NotImplementedError("This function is currently disabled.")
 
         if isinstance(weight, float) or isinstance(weight, int):
@@ -352,9 +356,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 edge.AddCost(Binding[Cost](energy_cost, edge.xu()))
 
     # -----------------------------------------------------------
-    # -------------------- AddDerivativeCost --------------------
+    # -------------------- add_derivative_cost --------------------
 
-    def AddDerivativeCost(
+    def add_derivative_cost(
         self, deriv_order: int, weight: float = 1.0, norm: str = "L2"
     ):
         """
@@ -410,9 +414,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 edge.AddCost(Binding[Cost](cost, x))
 
     # ---------------------------------------------------------------------
-    # -------------------- addDerivativeRegularization --------------------
+    # -------------------- add_derivative_regularization --------------------
 
-    def addDerivativeRegularization(
+    def add_derivative_regularization(
         self, weight_r: float = 1.0, weight_h: float = 1.0, deriv_order: int = 1
     ):
         """
@@ -442,9 +446,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                     edge.AddCost(Binding[Cost](reg_cost, edge.xu()))
 
     # ----------------------------------------------------------------------
-    # -------------------- addVelocityLimits --------------------
+    # -------------------- add_velocity_limits --------------------
 
-    def addVelocityLimits(self, lower_bound: np.ndarray, upper_bound: np.ndarray):
+    def add_velocity_limits(self, lower_bound: np.ndarray, upper_bound: np.ndarray):
         assert len(lower_bound) == self.dim
         assert len(upper_bound) == self.dim
 
@@ -476,9 +480,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 edge.AddConstraint(Binding[Constraint](velocity_con, edge.xu()))
 
     # ----------------------------------------------------------------------
-    # -------------------- addTimeMonotonicityConstraint --------------------
+    # -------------------- add_time_monotonicity_constraint --------------------
 
-    def addTimeMonotonicityConstraint(self):
+    def add_time_monotonicity_constraint(self):
         """Add constraint on the control points of the derivative of the
         time spline to ensure that time is always increasing."""
         u_time_control = self.u_h_trajectory.MakeDerivative(1).control_points()
@@ -487,7 +491,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                 u_time_control[ii], self.u_vars.flatten()
             )
             time_con = LinearConstraint(
-                b_ctrl, np.array([self.pdot_min]), np.array([np.inf])
+                b_ctrl, np.array([self.hdot_min]), np.array([np.inf])
             )
 
             for edge in self.gcs.Edges():
@@ -543,9 +547,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         return
 
     # ------------------------------------------------------------------
-    # -------------------- addZeroDerivativeConstraints --------------------
+    # -------------------- add_zero_derivative_constraints --------------------
 
-    def addZeroDerivativeConstraints(self):
+    def add_zero_derivative_constraints(self):
         """
         Enforce zero derivatives up to order (self.order - 1) at the start and end.
         This is done by making the first k+1 and last k+1 control points equal for
@@ -593,9 +597,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
                         edge.AddConstraint(xu[last_idx] == xu[prev_idx])
 
     # ------------------------------------------------------------------
-    # -------------------- SetupShortestPathProblem --------------------
+    # -------------------- setup_shortest_path_problem --------------------
 
-    def SetupShortestPathProblem(self):
+    def setup_shortest_path_problem(self):
         """
         Formulate a shortest path through convex sets problem where the path is
         composed of Bspline curves that must be contained in each convex set.
@@ -635,9 +639,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         self._set_continuity_constraints()
 
-        self.addZeroDerivativeConstraints()
+        self.add_zero_derivative_constraints()
 
-        self.addTimeMonotonicityConstraint()
+        self.add_time_monotonicity_constraint()
 
         # Add initial condition constraint
         for i in range(self.spatiotemporal_dim):
@@ -648,9 +652,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         return
 
     # -----------------------------------------------------------
-    # -------------------- SolveShortestPath --------------------
+    # -------------------- solve_shortest_path --------------------
 
-    def SolveShortestPath(
+    def solve_shortest_path(
         self,
         verbose: bool = True,
         convex_relaxation: bool = False,
@@ -720,9 +724,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         return result
 
     # -----------------------------------------------------------
-    # -------------------- PlotScenario -------------------------
+    # -------------------- plot_scenario -------------------------
 
-    def PlotScenario(
+    def plot_scenario(
         self,
         cmap_name="tab20",
         save_fig=False,
@@ -790,7 +794,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
             plt.savefig(f"{folder}/scenario.{format}", format=format, dpi=300)
 
     # -----------------------------------------------------------
-    # -------------------- ExtractSolution ----------------------
+    # -------------------- extract_solution ----------------------
 
     def _extract_solution_raw(self, result):
         """
@@ -816,7 +820,7 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
 
         return curves
 
-    def ExtractSolution(self, result):
+    def extract_solution(self, result):
         """
         Extract spatial and temporal B-spline trajectories along the optimal path.
 
@@ -845,9 +849,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         return spatial_trajectories, temporal_trajectories
 
     # -----------------------------------------------------------
-    # -------------------- AnimateSolution ----------------------
+    # -------------------- animate_solution ----------------------
 
-    def AnimateSolution(
+    def animate_solution(
         self,
         result,
         show=True,
@@ -908,9 +912,9 @@ class SpatioTemporalBsplineGraphOfConvexSets(Graph):
         return ani
 
     # -----------------------------------------------------------
-    # -------------------- PlotSolution -------------------------
+    # -------------------- plot_solution -------------------------
 
-    def PlotSolution(
+    def plot_solution(
         self,
         result,
         plot_control_points=True,
@@ -1078,9 +1082,9 @@ if __name__ == "__main__":
         )
 
         # Add costs to the problem
-        gcs.AddLengthCost(weight=1.0, norm="L2_squared")
+        gcs.add_length_cost(weight=1.0, norm="L2_squared")
         # gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
-        gcs.addTimeCost(weight=1.0)
+        gcs.add_time_cost(weight=1.0)
         # gcs.addPathEnergyCost(weight=0.5)
         gcs.addDerivativeRegularization(deriv_order=2)
         gcs.addVelocityLimits(
@@ -1089,7 +1093,7 @@ if __name__ == "__main__":
 
         # Plot the scenario
         plt.figure(figsize=(8, 8))
-        gcs.PlotScenario()
+        gcs.plot_scenario()
         plt.title("Scenario")
         # plt.xlabel("x")
         # plt.ylabel("y")
@@ -1099,7 +1103,7 @@ if __name__ == "__main__":
         plt.pause(0.1)  # pause to ensure the plot updates
 
         # Solve the problem
-        result = gcs.SolveShortestPath(
+        result = gcs.solve_shortest_path(
             verbose=True,
             convex_relaxation=True,
             preprocessing=True,
@@ -1110,13 +1114,13 @@ if __name__ == "__main__":
         print(f"Optimal cost: {result.get_optimal_cost()}")
 
         # Plot the solution
-        gcs.PlotSolution(result, plot_control_points=True, plot_path=True)
+        gcs.plot_solution(result, plot_control_points=True, plot_path=True)
         plt.title("Optimal solution")
         plt.pause(0.1)  # pause to ensure the plot updates
 
         # plt.show()
 
         # Animate the solution
-        gcs.AnimateSolution(result, show=True, save=False)
+        gcs.animate_solution(result, show=True, save=False)
 
     toy_example()

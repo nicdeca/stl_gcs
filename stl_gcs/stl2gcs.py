@@ -41,6 +41,7 @@ class STLTasks2GCS:
         x0: np.ndarray,
         t0: float = 0.0,
         eps_gamma: float = 1e-1,
+        ordered_formula: bool = False,
     ) -> None:
         """
         :param formula: The STL formula to be satisfied.
@@ -52,6 +53,7 @@ class STLTasks2GCS:
         TODO: Add until operator, FG and GF operators.
         """
         self.formula: Formula = formula
+        self.ordered_formula: bool = ordered_formula
         self.xdim: int = xdim
         self.r: float = r
 
@@ -100,6 +102,8 @@ class STLTasks2GCS:
         for branch_id, branch in enumerate(disjunctive_branches):
             if isinstance(branch, AndOperator):
                 subformulas = [Formula(root=child) for child in branch.children]
+                if not self.ordered_formula:
+                    subformulas = sort_subformulas_by_interval(subformulas)
             else:
                 subformulas = [Formula(root=branch)]
 
@@ -597,6 +601,38 @@ class STLTasks2GCS:
             plt.show()
         return fig, ax
 
+
+# ============================================================
+# --------------------- Helper functions ---------------------
+# ============================================================
+
+
+def sort_subformulas_by_interval(subformulas: list[Formula]) -> list[Formula]:
+    """
+    Sort subformulas by their time intervals.
+    Each subformula is a Formula with root having an 'interval' attribute.
+
+    Conditions:
+      - A preceding interval [a1,b1] must satisfy b1 <= a2 for the next [a2,b2].
+      - If intervals overlap, raise ValueError.
+    """
+
+    # Extract intervals
+    intervals = [(varphi, varphi.root.interval) for varphi in subformulas]
+
+    # Sort primarily by 'a', then by 'b'
+    intervals.sort(key=lambda x: (x[1].a, x[1].b))
+
+    # Check for overlaps
+    for (varphi1, int1), (varphi2, int2) in zip(intervals, intervals[1:]):
+        if int1.b > int2.a:  # overlap or touching in the wrong order
+            raise ValueError(f"Overlapping intervals not supported: {int1} and {int2}")
+
+    # Return the sorted subformulas only
+    return [varphi for varphi, _ in intervals]
+
+
+# ========================= Example ===========================
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt

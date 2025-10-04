@@ -53,24 +53,6 @@ if __name__ == "__main__":
         hG = BoxPredicate2d(size=dG, center=pG, name="Goal G")
         hH = BoxPredicate2d(size=dH, center=pH, name="Goal H")
 
-        # # Temporal operators
-        # f1 = GOp(0.0, 3.0) >> hA  # Always at A
-        # f2 = FOp(4.0, 6.0) >> hB  # Eventually B
-        # f3 = FOp(5.0, 8.0) >> hC  # Eventually C
-        # f4 = GOp(2.0, 5.0) >> hD  # Always D
-        # f5 = FOp(6.0, 9.0) >> hE  # Eventually E
-        # f6 = FOp(1.0, 4.0) >> hF  # Eventually F
-        # f7 = GOp(3.0, 7.0) >> hG  # Always at G
-        # f8 = FOp(2.0, 6.0) >> hH  # Eventually H
-
-        # # Conjunctions (single temporal operators per child)
-        # conj1 = f1 & f2  # Plan 1: stay at A, eventually B
-        # conj2 = f4 & f3  # Plan 2: eventually C, always D
-        # conj3 = f6 & f5  # Plan 3: eventually E, eventually F
-
-        # conj4 = f1 & f2 & f7  # Stay at A, eventually B, always G
-        # conj5 = f3 & f5 & f8  # Eventually C, eventually E, eventually H
-        # conj6 = f4 & f6 & f7 & f8  # Always D, eventually F, always G, eventually H
         # Plan 1
         conj1 = (
             (GOp(0.0, 3.0) >> hA)
@@ -152,22 +134,21 @@ if __name__ == "__main__":
             end_vertex,
             start_point,
             degree=3,
-            continuity=2,
         )
 
         # Add costs to the problem
-        gcs.AddLengthCost(weight=1.0, norm="L2_squared")
-        # gcs.AddDerivativeCost(degree=1, weight=10.0, norm="L2_squared")
-        gcs.addTimeCost(weight=1.0)
-        # gcs.addPathEnergyCost(weight=0.5)
-        gcs.addDerivativeRegularization(deriv_order=2)
-        gcs.addVelocityLimits(
+        gcs.add_length_cost(weight=1.0, norm="L2_squared")
+        gcs.add_derivative_cost(deriv_order=1, weight=10.0, norm="L2_squared")
+        gcs.add_time_cost(weight=1.0)
+        # gcs.add_path_energy_cost(weight=0.5)
+        gcs.add_derivative_regularization(deriv_order=2)
+        gcs.add_velocity_limits(
             lower_bound=-2.0 * np.ones(2), upper_bound=2.0 * np.ones(2)
         )
 
         # Plot the scenario
         plt.figure(figsize=(8, 8))
-        gcs.PlotScenario(save_fig=False, format="png", folder="results")
+        gcs.plot_scenario(save_fig=False, format="png", folder="results")
         plt.title("Scenario")
         # plt.xlabel("x")
         # plt.ylabel("y")
@@ -177,7 +158,7 @@ if __name__ == "__main__":
         plt.pause(0.1)  # pause to ensure the plot updates
 
         # Solve the problem
-        result = gcs.SolveShortestPath(
+        result = gcs.solve_shortest_path(
             verbose=True,
             convex_relaxation=True,
             preprocessing=True,
@@ -189,7 +170,7 @@ if __name__ == "__main__":
         print(f"Optimal cost: {result.get_optimal_cost()}")
 
         # Plot the solution
-        gcs.PlotSolution(
+        gcs.plot_solution(
             result,
             plot_control_points=True,
             plot_path=True,
@@ -203,9 +184,9 @@ if __name__ == "__main__":
         # plt.show()
 
         # Animate the solution
-        # gcs.AnimateSolution(result, show=True, save=False, filename=None)
+        # gcs.animate_solution(result, show=True, save=False, filename=None)
 
-        spatial_trajectories, temporal_trajectories = gcs.ExtractSolution(result)
+        spatial_trajectories, temporal_trajectories = gcs.extract_solution(result)
 
         # Instantiate the combined trajectory manager
         combined_trajectory = SpatioTemporalBspline(
